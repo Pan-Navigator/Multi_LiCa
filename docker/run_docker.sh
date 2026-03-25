@@ -11,6 +11,7 @@ docker run -it --rm --privileged \
     -v $SCRIPT_DIR/../config:/ros_ws/src/multi_lidar_calibration/config \
     -v $SCRIPT_DIR/../data:/ros_ws/src/multi_lidar_calibration/data \
     -v $SCRIPT_DIR/../output:/ros_ws/src/multi_lidar_calibration/output \
+    -v $HOME/Downloads:/ros_ws/bags \
     tum.ftm.multi_lidar_calibration:latest \
     /bin/bash
 

@@ -105,6 +105,7 @@ class Calibration:
         ransac_n=3,
         num_iterations=1000,
         crop_cloud=20,
+        max_rotation_deg=15.0,
     ):
         """
         Initialize a Calibration object.
@@ -132,6 +133,8 @@ class Calibration:
         self.ransac_n = ransac_n
         self.num_iterations = num_iterations
         self.crop_cloud = crop_cloud
+        self.max_rotation_deg = max_rotation_deg
+        self.source_to_target_tf = None  # set by compute_initial_transformation
         self.initial_transformation = self.compute_initial_transformation()
         self.calibrated_transformation = None
         self.reg_p2l = None
@@ -148,6 +151,7 @@ class Calibration:
         transformation_matrix = (
             np.linalg.inv(self.target.tf_matrix.matrix) @ self.source.tf_matrix.matrix
         )
+        self.source_to_target_tf = transformation_matrix  # stored for use in transform_pointcloud
         self.initial_transformation = TransformationMatrix.from_matrix(transformation_matrix)
 
         if self.source.pcd is None:
@@ -159,8 +163,12 @@ class Calibration:
         source_pcd = o3d.geometry.PointCloud(self.source.pcd.transform(transformation_matrix))
         target_pcd = o3d.geometry.PointCloud(self.target.pcd)
 
-        method = 'TEASER'
-        if method == 'FPFH':
+        method = 'TF_ONLY'
+        if method == 'TF_ONLY':
+            # source.pcd is already pre-aligned by transformation_matrix above.
+            # GICP must start from identity so it refines from the correct initial position.
+            self.initial_transformation = TransformationMatrix.from_matrix(np.eye(4))
+        elif method == 'FPFH':
             fpfh_voxel_size = 0.5
             source_fpfh = self.preprocess_point_cloud(source_pcd, fpfh_voxel_size)
             target_fpfh = self.preprocess_point_cloud(target_pcd, fpfh_voxel_size)
@@ -339,8 +347,22 @@ class Calibration:
             ),
         )
 
-        # Store the transformation matrix and registration result
-        self.calibrated_transformation = TransformationMatrix.from_matrix(reg_p2l.transformation)
+        # Validate the GICP rotation delta against the cap.
+        # Since the initial guess is identity, reg_p2l.transformation IS the delta correction.
+        gicp_rot = reg_p2l.transformation[:3, :3]
+        angle_deg = np.degrees(np.arccos(np.clip((np.trace(gicp_rot) - 1.0) / 2.0, -1.0, 1.0)))
+        if angle_deg > self.max_rotation_deg:
+            print(
+                f"[Calibration] WARNING: GICP rotation delta {angle_deg:.1f}° exceeds cap "
+                f"{self.max_rotation_deg:.1f}°. Falling back to TF-only transform."
+            )
+            reg_p2l.transformation = np.eye(4)
+
+        # Store the transformation matrix and registration result.
+        # Compose with source_to_target_tf so calibrated_transformation represents the full
+        # transform from source local frame to target frame.
+        full_transform = reg_p2l.transformation @ self.source_to_target_tf
+        self.calibrated_transformation = TransformationMatrix.from_matrix(full_transform)
         self.reg_p2l = reg_p2l
         return reg_p2l
 
@@ -357,6 +379,8 @@ class Calibration:
         if transformation_matrix is None:
             if self.calibrated_transformation is None:
                 self.compute_gicp_transformation()
+            # calibrated_transformation already includes the full chain (GICP @ source_to_target_tf),
+            # so applying it to the original raw pcd_transformed gives the correct result.
             self.source.pcd_transformed.transform(self.calibrated_transformation.matrix)
             self.source.calib_tf_matrix = self.calibrated_transformation
         else:

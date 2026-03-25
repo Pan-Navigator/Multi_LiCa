@@ -83,6 +83,7 @@ class MultiLidarCalibrator(Node):
         self.ransac_n = self.declare_parameter("ransac_n", 15).value
         self.num_iterations = self.declare_parameter("num_iterations", 5000).value
         self.r_runs = self.declare_parameter("r_runs", 5).value
+        self.max_rotation_deg = self.declare_parameter("max_rotation_deg", 15.0).value
         self.urdf_path = self.declare_parameter("urdf_path", "").value
         self.results_file = self.declare_parameter("results_file", "results.txt").value
         self.lidar_data = {}
@@ -215,6 +216,7 @@ class MultiLidarCalibrator(Node):
                 self.ransac_n,
                 self.num_iterations,
                 self.crop_cloud,
+                self.max_rotation_deg,
             )
             calibration.compute_gicp_transformation(self.voxel_size, self.remove_ground_flag)
             # Check the fitness score of the calibration
@@ -260,6 +262,7 @@ class MultiLidarCalibrator(Node):
                     self.ransac_n,
                     self.num_iterations,
                     self.crop_cloud,
+                    self.max_rotation_deg,
                 )
                 calibration.compute_gicp_transformation(self.voxel_size, self.remove_ground_flag)
                 if calibration.reg_p2l.fitness <= self.fitness_score_threshold:
@@ -314,6 +317,7 @@ class MultiLidarCalibrator(Node):
                         self.ransac_n,
                         self.num_iterations,
                         self.crop_cloud,
+                        self.max_rotation_deg,
                     )
                     calibration.compute_gicp_transformation(
                         self.voxel_size, self.remove_ground_flag
@@ -389,8 +393,24 @@ class MultiLidarCalibrator(Node):
             None
         """
         self.get_logger().info("Starting the calibration...")
+
+        # Build TF-aligned copies of each lidar's pcd for initial visualization and stitched_initial.pcd.
+        # Must be done before calibration modifies any pcd in-place.
+        stitched_pcd_initial = o3d.geometry.PointCloud()
+        initial_aligned_lidars = []
+        for lidar in self.lidar_dict.values():
+            pcd_in_base = o3d.geometry.PointCloud(lidar.pcd)
+            pcd_in_base.transform(lidar.tf_matrix.matrix)
+            stitched_pcd_initial += pcd_in_base
+            tmp = Lidar(lidar.name, lidar.translation, lidar.rotation)
+            tmp.load_pcd(pcd_in_base)
+            initial_aligned_lidars.append(tmp)
+        o3d.io.write_point_cloud(self.output_dir + "stitched_initial.pcd", stitched_pcd_initial)
+
         if self.visualize:
-            visualize_calibration(list(self.lidar_dict.values()), False)
+            # Popup 1: initial state — all lidars in base_link via their TF transforms
+            visualize_calibration(initial_aligned_lidars, False)
+
         target_lidar = self.lidar_dict[self.target_lidar]
         if self.calibrate_to_base and self.calibrate_target:
             # Perform target to ground (base) calibration. This computes the z-distance between the ground and the target
@@ -459,8 +479,13 @@ class MultiLidarCalibrator(Node):
         elif self.calibrate_to_base:
             # If the target to base transformation is already known, just transform the point cloud
             target_lidar.pcd.transform(target_lidar.tf_matrix.matrix)
+            target_lidar.pcd_transformed.transform(target_lidar.tf_matrix.matrix)
             target_lidar.translation = Translation(0, 0, 0)
             target_lidar.rotation = Rotation(0, 0, 0)
+            # Reset tf_matrix to identity so Calibration.compute_initial_transformation uses
+            # source.tf_matrix directly (mapping source to base_link), matching target.pcd
+            # which is now in base_link frame.
+            target_lidar.tf_matrix = TransformationMatrix(Translation(0, 0, 0), Rotation(0, 0, 0))
 
         # Perform the main LiDAR-to-LiDAR calibration
         if self.use_fitness_based_calibration:
@@ -469,12 +494,6 @@ class MultiLidarCalibrator(Node):
             self.standard_calibration(target_lidar)
 
         visualize_calibration(list(self.lidar_dict.values()), True, not self.visualize)
-        # Stitch point clouds
-        stitched_pcd = o3d.geometry.PointCloud()
-        for lidar in self.lidar_dict.values():
-            stitched_pcd += lidar.pcd
-        # Save stitched point clouds to a .pcd file
-        o3d.io.write_point_cloud(self.output_dir + "stitched_initial.pcd", stitched_pcd)
         # Create a point cloud for the transformed data
         stitched_pcd_transformed = o3d.geometry.PointCloud()
         for lidar in self.lidar_dict.values():
