@@ -77,14 +77,19 @@ def modify_urdf_joint_origin(file_path: str, joint_name: str, tf_matrix: Transfo
     root = tree.getroot()
 
     # Find the joint with the given name
+    found = False
     for joint in root.iter("joint"):
         if "name" in joint.attrib and joint.attrib["name"] == joint_name:
             origin = joint.find("origin")
             if origin is not None:
                 origin.attrib["xyz"] = tf_matrix.translation.__str__()
                 origin.attrib["rpy"] = tf_matrix.rotation.__str__()
+                found = True
             else:
                 raise Exception("joint has no origin to be modified")
+    if not found:
+        import warnings
+        warnings.warn(f"Joint '{joint_name}' not found in URDF: {file_path}")
     tree.write(file_path, xml_declaration=True)
 
 class Calibration:

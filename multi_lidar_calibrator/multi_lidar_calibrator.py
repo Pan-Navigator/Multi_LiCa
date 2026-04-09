@@ -234,7 +234,7 @@ class MultiLidarCalibrator(Node):
             if self.urdf_path != "":
                 modify_urdf_joint_origin(
                     self.urdf_path,
-                    source_lidar.name + "_joint",
+                    "joint_" + source_lidar.name,
                     calibration.calibrated_transformation,
                 )
             calibrated_lidars.append(source_lidar)
@@ -274,7 +274,7 @@ class MultiLidarCalibrator(Node):
                 if self.urdf_path != "":
                     modify_urdf_joint_origin(
                         self.urdf_path,
-                        source_lidar.name + "_joint",
+                        "joint_" + source_lidar.name,
                         calibration.calibrated_transformation,
                     )
 
@@ -364,7 +364,7 @@ class MultiLidarCalibrator(Node):
                 if self.urdf_path != "":
                     modify_urdf_joint_origin(
                         self.urdf_path,
-                        calibration.source.name + "_joint",
+                        "joint_" + calibration.source.name,
                         calibration.calibrated_transformation,
                     )
 
@@ -465,7 +465,7 @@ class MultiLidarCalibrator(Node):
             if self.urdf_path != "":
                 modify_urdf_joint_origin(
                     self.urdf_path,
-                    self.target_lidar + "_joint",
+                    "joint_" + self.target_lidar,
                     calibration.calibrated_transformation,
                 )
             calibration.transform_pointcloud()
