@@ -36,26 +36,92 @@ LIDAR_TOPICS = [
 ]
 
 
-def find_urdf(urdf_path: str = None) -> pathlib.Path:
-    if urdf_path:
-        p = pathlib.Path(urdf_path)
+def _versioning_system_root() -> pathlib.Path:
+    """Locate the amr-versioning-system directory in the workspace.
+
+    Walks upward from the install prefix to find the workspace root,
+    which works regardless of whether the package is in src/Multi_LiCa
+    or nested inside src/mecanum-robot-ros2/utilities/Multi_LiCa.
+    """
+    start = pathlib.Path(get_package_prefix("multi_lidar_calibrator"))
+    for parent in start.parents:
+        candidate = parent / "src/mecanum-robot-ros2/amr-versioning-system"
+        if candidate.is_dir():
+            return candidate
+    raise RuntimeError(
+        "amr-versioning-system not found in any parent workspace.\n"
+        "Ensure mecanum-robot-ros2 is in <workspace>/src/ and submodules are initialized."
+    )
+
+
+def _read_robot_version(vs_root: pathlib.Path) -> tuple:
+    """Read AMR_CUSTOMER/AMR_LOCATION/AMR_MACHINE from env or .env file.
+
+    Returns (customer, location, machine) or (None, None, None).
+    """
+    customer = os.environ.get("AMR_CUSTOMER")
+    location = os.environ.get("AMR_LOCATION")
+    machine = os.environ.get("AMR_MACHINE")
+
+    if customer and location and machine:
+        return customer, location, machine
+
+    # Fall back to .env written by apply.sh
+    env_file = vs_root / "config" / "current" / ".env"
+    if env_file.exists():
+        env_vars = {}
+        for line in env_file.read_text().splitlines():
+            line = line.strip()
+            if "=" in line and not line.startswith("#"):
+                key, _, val = line.partition("=")
+                env_vars[key.strip()] = val.strip()
+        customer = env_vars.get("AMR_CUSTOMER")
+        location = env_vars.get("AMR_LOCATION")
+        machine = env_vars.get("AMR_MACHINE")
+        if customer and location and machine:
+            return customer, location, machine
+
+    return None, None, None
+
+
+def find_urdf_paths(urdf_override: str = None) -> tuple:
+    """Find URDF read path (initial guesses) and write path (robot-specific).
+
+    Returns (read_path, write_path). write_path may be None if the robot
+    version cannot be determined.
+    """
+    if urdf_override:
+        p = pathlib.Path(urdf_override)
         if not p.exists():
-            raise FileNotFoundError(f"URDF not found: {urdf_path}")
-        return p
+            raise FileNotFoundError(f"URDF not found: {urdf_override}")
+        return p, p
 
     try:
-        ws_install = pathlib.Path(get_package_prefix("multi_lidar_calibrator"))
-        ws_root = ws_install.parent.parent
-        candidate = ws_root / "src/mecanum-robot-ros2/amr-versioning-system/urdf/current/mecanum_bot.urdf"
-        if candidate.exists():
-            return candidate
-    except Exception:
-        pass
+        vs_root = _versioning_system_root()
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"{e}\nPass --urdf /path/to/mecanum_bot.urdf explicitly."
+        )
 
-    raise RuntimeError(
-        "Could not auto-detect URDF in mecanum-robot-ros2 submodule.\n"
-        "Pass --urdf /path/to/mecanum_bot.urdf explicitly."
-    )
+    # Always read from current/ (the active merged URDF)
+    read_path = vs_root / "urdf" / "current" / "mecanum_bot.urdf"
+    if not read_path.exists():
+        raise RuntimeError(
+            f"Active URDF not found: {read_path}\n"
+            "Run apply.sh first or pass --urdf explicitly."
+        )
+
+    # Try to resolve the robot-specific write path
+    customer, location, machine = _read_robot_version(vs_root)
+    write_path = None
+    if customer and location and machine:
+        robot_dir = (vs_root / "urdf" / "customers" /
+                     customer / location / machine)
+        if robot_dir.is_dir():
+            # Write to .urdf in the customer dir (created if missing)
+            write_path = robot_dir / "mecanum_bot.urdf"
+
+    return read_path, write_path
 
 
 def _node_file_dir() -> pathlib.Path:
@@ -173,7 +239,8 @@ def generate_params_yaml(
     return yaml_path
 
 
-def run_calibration(params_yaml: pathlib.Path) -> int:
+def run_calibration(params_yaml: pathlib.Pa
+th) -> int:
     """Launch calibration and return the exit code.
 
     The calibrator node calls exit(0) from within rclpy.spin(), which may
@@ -331,8 +398,17 @@ def main(args=None):
 
     # --- Find URDF ---
     try:
-        urdf_path = find_urdf(parsed_args.urdf)
-        print(f"URDF: {urdf_path}")
+        read_urdf, write_urdf = find_urdf_paths(parsed_args.urdf)
+        print(f"URDF (read): {read_urdf}")
+        if write_urdf and write_urdf != read_urdf:
+            print(f"URDF (write): {write_urdf}")
+        elif not write_urdf:
+            print(
+                "WARNING: Could not determine robot version.\n"
+                "  Set AMR_CUSTOMER, AMR_LOCATION, AMR_MACHINE env vars,\n"
+                "  or run apply.sh to populate config/current/.env.\n"
+                "  Calibration will only update urdf/current/ (not robot-specific)."
+            )
     except (FileNotFoundError, RuntimeError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -349,7 +425,7 @@ def main(args=None):
 
     # --- Parse URDF for initial guesses ---
     print("Parsing URDF for initial transform guesses...")
-    lidars = parse_urdf_transforms(urdf_path)
+    lidars = parse_urdf_transforms(read_urdf)
     if not lidars:
         print("Error: No LiDAR joints found in URDF", file=sys.stderr)
         sys.exit(1)
@@ -366,7 +442,7 @@ def main(args=None):
 
     # --- Copy URDF to temp (calibrator writes results here) ---
     temp_urdf = output_dir / "mecanum_bot_calibrated.urdf"
-    shutil.copy(urdf_path, temp_urdf)
+    shutil.copy(read_urdf, temp_urdf)
 
     # --- Generate params YAML ---
     print("Generating live calibration parameters...")
@@ -393,10 +469,23 @@ def main(args=None):
     print_results(results, fitness_threshold)
 
     # --- Confirm and apply ---
-    if confirm_apply(urdf_path):
-        shutil.copy(temp_urdf, urdf_path)
-        print(f"\nURDF updated: {urdf_path}")
-        print(f"Commit mecanum-robot-ros2 when satisfied to persist the calibration.")
+    if confirm_apply(read_urdf):
+        # Always update current/ (active URDF)
+        shutil.copy(temp_urdf, read_urdf)
+        print(f"\nUpdated: {read_urdf}")
+
+        # Also update robot-specific URDF if we know the version
+        if write_urdf and write_urdf != read_urdf:
+            shutil.copy(temp_urdf, write_urdf)
+            print(f"Updated: {write_urdf}")
+            print("Commit amr-versioning-system when satisfied to persist.")
+        elif not write_urdf:
+            print(
+                "\nNOTE: Only urdf/current/ was updated (robot version unknown).\n"
+                "This will be overwritten on next apply.sh run.\n"
+                "To persist, copy the calibrated URDF to the correct customer path:\n"
+                f"  cp {temp_urdf} <versioning-system>/urdf/customers/<customer>/<location>/<machine>/mecanum_bot.urdf"
+            )
     else:
         print(f"\nURDF unchanged. Calibrated URDF saved to: {temp_urdf}")
 
