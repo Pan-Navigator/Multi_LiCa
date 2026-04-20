@@ -14,14 +14,14 @@
     lidar_topics: [/lidar/front/rslidar_points, /lidar/back/rslidar_points]
     # topic for TFMessage
     tf_topic: /tf_static
-    visualize: true
+    visualize: false
     # read transfromations to base from a given table instead of TF message
     read_tf_from_table: true
     table_degrees: true
     # table of lidar name (frame_id in ROS), xyz translation [m], rpy rotation [deg/rad]
     # from bag tf_static (new_calibrated_rz_20260324_190930)
-    rslidarfront: [1.312, -0.45, 0.345, 0.0, 0.0, -46.9825]
-    rslidarback: [-1.312, 0.45, 0.345, 0.0, 0.0, 135.069]
+    rslidarfront: [1.3120, -0.4400, 0.3450, 0.0, 0.0, -50.0]
+    rslidarback: [-1.2639, 0.5497, 0.2476, -1.222, -0.359, 135.647]
 
     read_pcds_from_file: true
     # path for point clouds in pcd format. Structure: <lidar_name>/<pcd>/<filename1><filename2>...

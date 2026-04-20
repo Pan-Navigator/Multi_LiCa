@@ -19,11 +19,13 @@ from sensor_msgs.msg import PointCloud2
 import ros2_numpy as rnp
 
 TOPICS = {
-    "/lidar/front/rslidar_points": "rslidarfront",
-    "/lidar/back/rslidar_points":  "rslidarback",
+    "/lidar/front/rslidar_points":  "rslidarfront",
+    "/lidar/back/rslidar_points":   "rslidarback",
+    "/lidar/left/rslidar_points":   "rslidarleft",
+    "/lidar/right/rslidar_points":  "rslidarright",
 }
 FRAME_COUNT = 10
-OUT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/pcds/")
+OUT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/pcds_four/")
 
 
 class PcdExtractor(Node):
@@ -43,7 +45,7 @@ class PcdExtractor(Node):
                 self.start_time = self.get_clock().now()
 
             elapsed = (self.get_clock().now() - self.start_time).nanoseconds * 1e-9
-            if elapsed > 2.0:
+            if elapsed > 10.0:
                 return  # outside the 2-second window
 
             frames = self.frames[lidar_name]
