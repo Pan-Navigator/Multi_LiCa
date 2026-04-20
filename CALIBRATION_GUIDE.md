@@ -1,223 +1,215 @@
 # Multi-LiDAR Calibration — Run Guide
 
-Calibrates `rslidarfront` and `rslidarback` to the `base_link` frame on the mecanum robot using GICP.
+Calibrates the mecanum robot's RoboSense LiDARs to `base_link` using GICP, with TEASER++ feature matching for coarse alignment.
+
+Two recommended workflows:
+
+- **Live (interactive)**: `calibrate_live` CLI reads initial guesses from the active URDF, runs calibration against live sensor topics, and writes the refined transforms back into the URDF after confirmation.
+- **Offline (bag + PCD)**: record a bag, extract PCDs, run the calibrator node against the saved PCDs. Useful for iterating on parameters without tying up the robot.
 
 ---
 
 ## Prerequisites
 
-- ROS2 Humble installed and sourced
-- `ros-humble-rosbag2-storage-mcap` installed (for MCAP bag playback)
-- Workspace built with `colcon build --symlink-install`
-- A recorded `.mcap` bag with both lidar topics and `/tf_static`
+- ROS 2 Humble installed and sourced
+- `ros-humble-rosbag2-storage-mcap` for MCAP bag playback
+- Python packages: `open3d`, `numpy 1.24.x`, `scipy <1.14`, `ros2_numpy`
+- `teaserpp_python` built from source (see below)
+
+### Python package pinning
+
+Open3D's aarch64 wheel pins numpy to 1.24.2, so scipy must be held back to a version that supports numpy 1.x:
 
 ```bash
-sudo apt-get install ros-humble-rosbag2-storage-mcap
+pip install "numpy==1.24.2" "scipy==1.11.4" --force-reinstall
+pip install open3d ros2_numpy
 ```
 
----
+### Building TEASER++
 
-## Step 1 — Build the workspace
+The Python bindings are not on PyPI — build from the submodule with tests disabled (the test suite has build errors on current compilers that don't affect the library):
 
 ```bash
-cd /ros_ws
-colcon build --symlink-install
+cd utilities/Multi_LiCa/TEASER-plusplus
+mkdir -p build && cd build
+cmake .. -DTEASERPP_PYTHON_VERSION=3.10 -DBUILD_TEASER_FPFH=ON -DBUILD_TESTS=OFF
+make -j$(nproc) teaserpp_python
+cp python/teaserpp_python/teaserpp_python.cpython-310-*.so \
+   $(python3 -c "import site; print(site.getsitepackages()[0])")/
+python3 -c "import teaserpp_python; print('ok')"
+```
+
+Rebuild whenever the installed numpy version changes (ABI incompatibility causes segfaults).
+
+### Workspace build
+
+```bash
+cd <workspace>
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-up-to multi_lidar_calibrator
 source install/setup.bash
 ```
 
 ---
 
-## Step 2 — Extract PCD files from the bag
+## Workflow A — Live calibration (`calibrate_live`)
 
-This only needs to be done once per bag. The extracted PCDs are saved to `data/pcds/` and reused for all subsequent calibration runs.
+The recommended workflow. Reads initial guesses from the active URDF (via the versioning system), runs the calibrator against live lidar topics, and writes results back to both `urdf/current/` and the robot-specific customer URDF.
+
+```bash
+calibrate_live                     # defaults: 1 frame per LiDAR, auto-detect URDF
+calibrate_live --frames 3          # accumulate 3 frames per LiDAR (denser cloud)
+calibrate_live --urdf /path.urdf   # override URDF path
+```
+
+Requires `AMR_CUSTOMER`, `AMR_LOCATION`, `AMR_MACHINE` env vars (or the `.env` file written by `apply.sh`) to locate the robot-specific write target. Without them, only `urdf/current/` is updated — the change is lost on next `apply.sh` run.
+
+After the run, the script prints per-LiDAR fitness and xyz/rpy deltas, then prompts `[y/N]` before writing. Say N if any fitness is below your threshold or a transform looks wrong.
+
+---
+
+## Workflow B — Offline calibration from a bag
+
+Use when you want to iterate on parameters without tying up the robot.
+
+### Step 1 — Record a bag
+
+From the robot (with lidars publishing):
+
+```bash
+ros2 bag record -s mcap -o calibrate_four_lidars_$(date +%Y%m%d_%H%M%S) \
+  /lidar/front/rslidar_points \
+  /lidar/back/rslidar_points \
+  /lidar/left/rslidar_points \
+  /lidar/right/rslidar_points \
+  /tf_static /tf
+```
+
+10–20 seconds is enough for a static scene.
+
+### Step 2 — Extract PCDs
 
 **Terminal 1 — play the bag on loop:**
 ```bash
-ros2 bag play <path_to_bag> --loop
+ros2 bag play <bag_dir> --loop
 ```
 
 **Terminal 2 — run the extractor:**
 ```bash
-source /ros_ws/install/setup.bash
-python3 /ros_ws/src/multi_lidar_calibration/scripts/extract_pcds.py
+source install/setup.bash
+python3 src/mecanum-robot-ros2/utilities/Multi_LiCa/scripts/extract_pcds.py
 ```
 
-The script captures the first 10 frames from each lidar within a 2-second window, merges them into a single dense cloud per lidar, and saves:
+Captures 10 frames per LiDAR within a 10-second window, merges them per LiDAR, saves to `utilities/Multi_LiCa/data/pcds_four/`.
 
-```
-data/pcds/rslidarfront.pcd
-data/pcds/rslidarback.pcd
-```
+Stop the bag (Ctrl+C in terminal 1) once the extractor exits.
 
-Stop the bag after the extractor exits.
+### Step 3 — Run calibration
 
----
+The package ships two configs you'll typically edit:
 
-## Step 3 — Set the TF table in params.yaml
+| Config | Lidars | When to use |
+|---|---|---|
+| `config/params.yaml` | front + back | Recommended for auto-calibration — only these two have enough overlap for GICP |
+| `config/params_four.yaml` | front + back + left + right | Diagnostic runs; left/right won't auto-calibrate (see below) |
 
-The TF table gives the initial pose estimate for each lidar in `base_link`. Read the actual values from the bag's `/tf_static`:
-
-```bash
-# Terminal 1 — play bag
-ros2 bag play <path_to_bag> --loop
-
-# Terminal 2 — read tf_static
-python3 /tmp/read_tf.py
-```
-
-Update `config/params.yaml` with the printed xyz/rpy values (in degrees if `table_degrees: true`):
+Key parameters to review before running:
 
 ```yaml
-read_tf_from_table: true
-table_degrees: true
-rslidarfront: [1.312, -0.45, 0.345, 0.0, 0.0, -46.9825]
-rslidarback:  [-1.312, 0.45, 0.345, 0.0, 0.0, 135.069]
-```
-
----
-
-## Step 4 — Review params.yaml
-
-Key parameters for the calibration run:
-
-```yaml
-# Use saved PCD files — no bag needed at calibration time
+visualize: false                        # true requires X11; false for headless/robot
 read_pcds_from_file: true
-pcd_directory: /../data/pcds/
+pcd_directory: /../data/pcds_four/      # relative to multi_lidar_calibrator.py dir
+output_dir: /../output/four/
 
-# Calibrate all lidars to base_link
-calibrate_to_base: true
-calibrate_target: false
 target_frame_id: rslidarfront
 base_frame_id: base_link
+calibrate_to_base: true
 
-# GICP tuning — tighter = better quality, lower fitness score
-max_corresp_dist: 0.3      # max point-pair distance [m]
-max_rotation_deg: 10.0     # rotation sanity cap — rejects GICP if delta > this
-max_iterations: 200
-rel_fitness: 1.0e-6
-rel_rmse: 1.0e-6
-epsilon: 0.0001
-voxel_size: 0.05           # downsampling for normal estimation [m]
-fitness_score_threshold: 0.3  # calibration is rejected if fitness <= this
+# Initial guess per lidar: [x, y, z, roll_deg, pitch_deg, yaw_deg]
+rslidarfront: [1.3120, -0.4400, 0.3450, 0.0, 0.0, -50.0]
+rslidarback:  [-1.2639, 0.5497, 0.2476, -1.222, -0.359, 135.647]
 
-# Visualize alignment before and after calibration
-visualize: true
-runs_count: 5              # number of independent calibration runs
+max_corresp_dist: 0.3                   # max GICP point-pair distance [m]
+max_rotation_deg: 10.0                  # safety cap; if GICP exceeds this, falls back to TF-only
+fitness_score_threshold: 0.3            # pairs below this are rejected (0.15 acceptable for low overlap)
+voxel_size: 0.05                        # downsampling [m]
+use_fitness_based_calibration: false    # true picks best pair chain automatically
 ```
 
----
-
-## Step 5 — Run the calibration
+Then launch:
 
 ```bash
-source /ros_ws/install/setup.bash
 ros2 launch multi_lidar_calibrator calibration.launch.py \
-  parameter_file:=/ros_ws/src/multi_lidar_calibration/config/params.yaml
+  parameter_file:=src/mecanum-robot-ros2/utilities/Multi_LiCa/config/params.yaml
 ```
 
-Two visualization windows will pop up per run:
+### Step 4 — Read the results
 
-| Window | What it shows |
+Results land in `utilities/Multi_LiCa/output/` (or `output/four/` for the 4-lidar config):
+
+| File | Description |
 |---|---|
-| **Window 1** | Initial state — both lidars placed using TF table transforms. Should look aligned. |
-| **Window 2** | GICP result — refined alignment. Should be equal or better than Window 1. |
+| `results.txt` / `results_four.txt` | Per-run calibration log (xyz, rpy, fitness, rmse) |
+| `stitched_initial.pcd` | Merged cloud using the YAML initial guesses (pre-GICP) |
+| `stitched_transformed.pcd` | Merged cloud after GICP refinement |
 
-Close each window to proceed to the next run.
+View the stitched PCDs in CloudCompare or:
 
----
-
-## Step 6 — Read the results
-
-Results are written to `output/results.txt` after each run. The terminal also prints per-run calibration info.
-
-**Interpret the output:**
-
-```
-rslidarback to rslidarfront calibration
-calibrated xyz = <x> <y> <z>       # translation of rslidarback in base_link [m]
-calibrated rpy = <r> <p> <y>       # rotation in degrees (roll, pitch, yaw)
-fitness: <value>                    # fraction of points with a valid correspondence (higher = better)
-inlier_rmse: <value>               # mean distance of matched point pairs [m] (lower = better)
+```bash
+python3 -c "import open3d as o3d; o3d.visualization.draw_geometries([o3d.io.read_point_cloud('output/stitched_transformed.pcd')])"
 ```
 
-**Quality thresholds:**
+Quality bands (empirical):
 
 | Metric | Good | Acceptable | Poor |
 |---|---|---|---|
-| fitness | > 0.5 | 0.3 – 0.5 | < 0.3 (rejected) |
+| fitness | > 0.5 | 0.3 – 0.5 | < 0.3 |
 | inlier_rmse | < 0.05 m | 0.05 – 0.15 m | > 0.15 m |
 
 ---
 
-## Reference Result — 2026-03-25
+## Known limitations
 
-Bag: `new_calibrated_rz_20260324_190930`
-Platform: mecanum_bot
-Environment: indoor, static scene
+### Left/right LiDARs can't auto-calibrate to front
 
-**TF table (initial guess from bag tf_static):**
+On the 4-LiDAR mecanum platform, left/right sensors face roughly 90° away from front/back and have near-zero overlap with front. GICP reports fitness below the threshold regardless of the initial guess quality. The `stitched_initial.pcd` will usually look visually well-aligned (because the URDF values are hand-measured and correct) — but the calibrator can't *verify* that automatically.
 
-| LiDAR | x [m] | y [m] | z [m] | roll [°] | pitch [°] | yaw [°] |
-|---|---|---|---|---|---|---|
-| rslidarfront | 1.312 | -0.45 | 0.345 | 0.0 | 0.0 | -46.9825 |
-| rslidarback | -1.312 | 0.45 | 0.345 | 0.0 | 0.0 | 135.069 |
+Consequence: `calibrate_live` with all 4 LiDARs will report left/right as "failed" even when the URDF is correct. Use Workflow B with `config/params.yaml` (front+back only) for automatic GICP refinement, and keep the hand-measured URDF values for left/right.
 
-**GICP params used:**
+### GICP rotation cap
 
-| Param | Value |
-|---|---|
-| max_corresp_dist | 0.3 m |
-| max_rotation_deg | 10° |
-| max_iterations | 200 |
-| voxel_size | 0.05 m |
-| rel_fitness / rel_rmse | 1e-6 |
+`max_rotation_deg` (default 10°) protects against GICP converging to a wrong local minimum when overlap is marginal. If GICP requests a larger delta, the calibrator logs a warning and falls back to the TF-only (initial guess) transform. Raising the cap above ~15° usually produces garbage on this sensor layout — tune down rather than up.
 
-**Calibrated result — rslidarback → base_link:**
+### Headless environments
 
-```
-calibrated xyz = -1.2639  0.5497  0.2476   [m]
-calibrated rpy = -1.222°  -0.359°  135.626°
-fitness:         0.3001
-inlier_rmse:     0.1229 m
-```
-
-**Transformation matrix:**
-```
-[[-0.71478  -0.69927  -0.01044  -1.26387]
- [ 0.69932  -0.71454  -0.01963   0.54968]
- [ 0.00626  -0.02133   0.99975   0.24760]
- [ 0.        0.        0.        1.     ]]
-```
-
-**Delta vs bag tf_static reference:**
-
-| | Calibrated | tf_static | Delta |
-|---|---|---|---|
-| x | -1.264 m | -1.312 m | +48 mm |
-| y | +0.550 m | +0.450 m | +100 mm |
-| z | +0.248 m | +0.345 m | -97 mm |
-| roll | -1.22° | 0° | -1.22° |
-| pitch | -0.36° | 0° | -0.36° |
-| yaw | 135.63° | 135.07° | +0.56° |
-
-Notes:
-- Yaw error is **0.56°** — well within mounting tolerance
-- Pitch error is **0.36°** — good
-- Y and Z translation offsets (~100 mm) are consistent across runs and may reflect real mounting offset vs the URDF reference
-- Rotation sanity cap (`max_rotation_deg: 10°`) did **not** trigger — GICP converged without a yaw flip
+Set `visualize: false` in the YAML when running on the robot (no X11). Otherwise Open3D crashes with a GLFW error during the initial cloud preview.
 
 ---
 
-## Output files
+## Reference run — 2026-04-20
 
-| File | Description |
-|---|---|
-| `output/results.txt` | Full calibration log for all runs |
-| `output/stitched_initial.pcd` | Merged point cloud using TF initial guess (before GICP) |
-| `output/stitched_transformed.pcd` | Merged point cloud after GICP calibration |
+Bag: `calibrate_four_lidars_20260420_092640`
+Config: `config/params.yaml` (front + back)
+Platform: Rijk Zwaan Kwintsheul harvester_001
 
-View PCD files in CloudCompare or with:
-```bash
-python3 -c "import open3d as o3d; o3d.visualization.draw_geometries([o3d.io.read_point_cloud('output/stitched_transformed.pcd')])"
+**Result — rslidarback → rslidarfront:**
+
 ```
+calibrated xyz = -1.2128  0.6849  0.2737   [m]
+calibrated rpy = -1.152°  -0.386°  132.367°
+fitness:         0.3004
+inlier_rmse:     0.1233 m
+```
+
+**Delta vs pre-run URDF (`-1.2399, 0.5189, 0.2321 / rpy -1.764°, 0.458°, 135.43°`):**
+
+| | Calibrated | Pre-URDF | Delta |
+|---|---|---|---|
+| x | -1.213 m | -1.240 m | +27 mm |
+| y | +0.685 m | +0.519 m | +166 mm |
+| z | +0.274 m | +0.232 m | +42 mm |
+| roll | -1.15° | -1.76° | +0.61° |
+| pitch | -0.39° | +0.46° | -0.85° |
+| yaw | 132.37° | 135.43° | -3.06° |
+
+Applied to `urdf/customers/rijkzwaan/kwintsheul/harvester_001/mecanum_bot.xacro`.

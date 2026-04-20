@@ -7,17 +7,17 @@
     frame_count: 1
     runs_count: 5
 
-    use_fitness_based_calibration: false
+    use_fitness_based_calibration: true
 
     lidar_topics: [/lidar/front/rslidar_points, /lidar/back/rslidar_points, /lidar/left/rslidar_points, /lidar/right/rslidar_points]
     tf_topic: /tf_static
-    visualize: true
+    visualize: false
     read_tf_from_table: true
     table_degrees: true
 
     # Initial transforms from bag /tf_static
-    rslidarfront: [1.2732816336455675, -0.48711512445294547, 0.32685055473131763, -0.316, 0.272, -46.852]
-    rslidarback: [-1.352701754397057, 0.4068831529299437, 0.3456740974555309, 0.306, -0.283, 135.199]
+    rslidarfront: [1.3120, -0.4400, 0.3450, 0.0, 0.0, -50.0]
+    rslidarback: [-1.2639, 0.5497, 0.2476, -1.222, -0.359, 135.647]
     rslidarleft: [0.0, 0.4445, 0.217, 0.0, -1.0, 0.0]
     rslidarright: [0.0, -0.4445, 0.217, 0.0, 1.5, 0.0]
 
@@ -43,7 +43,7 @@
     epsilon: 0.0001
     voxel_size: 0.05
     remove_ground_flag: false
-    fitness_score_threshold: 0.3
+    fitness_score_threshold: 0.15
 
     # RANSAC parameters
     distance_threshold: 0.1

@@ -239,8 +239,7 @@ def generate_params_yaml(
     return yaml_path
 
 
-def run_calibration(params_yaml: pathlib.Pa
-th) -> int:
+def run_calibration(params_yaml: pathlib.Path) -> int:
     """Launch calibration and return the exit code.
 
     The calibrator node calls exit(0) from within rclpy.spin(), which may
