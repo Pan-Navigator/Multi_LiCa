@@ -1,0 +1,27 @@
+# Horizontal front-back pair — the only auto-calibration-viable subset on the
+# mecanum ring (enough overlap for GICP). Initial xyz/rpy pulled from URDF.
+preset: horizontal_pair
+
+sensors:
+  - name: front
+    topic: /lidar/front/rslidar_points
+    frame_id: rslidarfront
+    joint: joint_rslidarfront
+  - name: back
+    topic: /lidar/back/rslidar_points
+    frame_id: rslidarback
+    joint: joint_rslidarback
+
+target: front
+
+calibration:
+  fitness_score_threshold: 0.3
+  max_corresp_dist: 0.3
+  max_rotation_deg: 10.0
+  voxel_size: 0.05
+  remove_ground_flag: false
+  calibrate_to_base: true
+  calibrate_target: false
+  use_fitness_based_calibration: false
+  runs_count: 1
+  base_to_ground_z: 0.17864325963808905
