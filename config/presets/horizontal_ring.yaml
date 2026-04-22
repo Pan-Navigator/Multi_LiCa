@@ -1,0 +1,36 @@
+# Full 4-lidar horizontal ring — diagnostic. Left/right have near-zero overlap
+# with front/back so they typically fail GICP and fall back to URDF values.
+# For actual auto-calibration use horizontal_pair.
+preset: horizontal_ring
+
+sensors:
+  - name: front
+    topic: /lidar/front/rslidar_points
+    frame_id: rslidarfront
+    joint: joint_rslidarfront
+  - name: back
+    topic: /lidar/back/rslidar_points
+    frame_id: rslidarback
+    joint: joint_rslidarback
+  - name: left
+    topic: /lidar/left/rslidar_points
+    frame_id: rslidarleft
+    joint: joint_rslidarleft
+  - name: right
+    topic: /lidar/right/rslidar_points
+    frame_id: rslidarright
+    joint: joint_rslidarright
+
+target: front
+
+calibration:
+  fitness_score_threshold: 0.3
+  max_corresp_dist: 0.3
+  max_rotation_deg: 10.0
+  voxel_size: 0.05
+  remove_ground_flag: false
+  calibrate_to_base: true
+  calibrate_target: false
+  use_fitness_based_calibration: true
+  runs_count: 1
+  base_to_ground_z: 0.17864325963808905

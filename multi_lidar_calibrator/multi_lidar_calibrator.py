@@ -13,7 +13,28 @@ from tf2_msgs.msg import TFMessage
 
 from .calibration.Calibration import *
 
- 
+
+def _pcd_from_msg(msg: PointCloud2) -> o3d.geometry.PointCloud:
+    """Convert PointCloud2 → Open3D PointCloud, dropping NaN/Inf points.
+
+    Robosense drivers emit NaN for missed returns; Open3D's bounding box and
+    GICP misbehave if they're left in.
+    """
+    xyz = rnp.numpify(msg)["xyz"]
+    mask = ~(np.isnan(xyz).any(axis=1) | np.isinf(xyz).any(axis=1))
+    return o3d.geometry.PointCloud(o3d.utility.Vector3dVector(xyz[mask]))
+
+
+def _pcd_from_file(path: str) -> o3d.geometry.PointCloud:
+    """Read PCD from disk, dropping any NaN/Inf rows."""
+    pcd = o3d.io.read_point_cloud(path)
+    pts = np.asarray(pcd.points)
+    mask = ~(np.isnan(pts).any(axis=1) | np.isinf(pts).any(axis=1))
+    if mask.all():
+        return pcd
+    return o3d.geometry.PointCloud(o3d.utility.Vector3dVector(pts[mask]))
+
+
 def get_transfrom(tf_msg: TFMessage, child_frame_id: str) -> Transform:
     """
     Extract the transform for a specific child frame from a TFMessage.
@@ -49,7 +70,7 @@ class MultiLidarCalibrator(Node):
         ).value
         self.read_tf_from_table = self.declare_parameter("read_tf_from_table", True).value
         self.table_degrees = self.declare_parameter("table_degrees", True).value
-        self.topic_names = self.declare_parameter("lidar_topics", ["lidar_1, lidar_2"]).value
+        self.topic_names = self.declare_parameter("lidar_topics", [""]).value
         self.target_lidar = self.declare_parameter("target_frame_id", "lidar_1").value
         self.base_frame_id = self.declare_parameter("base_frame_id", "base_link").value
         self.calibrate_target = self.declare_parameter("calibrate_target", False).value
@@ -59,15 +80,12 @@ class MultiLidarCalibrator(Node):
         self.runs_count = self.declare_parameter("runs_count", 1).value
         self.crop_cloud = self.declare_parameter("crop_cloud", 25).value
 
-        self.output_dir = (
-            os.path.dirname(os.path.realpath(__file__))
-            + self.declare_parameter("output_dir", "/../output/").value
+        self.output_dir = self._resolve_dir(
+            self.declare_parameter("output_dir", "").value, fallback_rel="../output/"
         )
-        if not os.path.exists(self.output_dir):
-            os.makedirs(self.output_dir)
-        self.pcd_in_dir = (
-            os.path.dirname(os.path.realpath(__file__))
-            + self.declare_parameter("pcd_directory", "/../data/demo/").value
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.pcd_in_dir = self._resolve_dir(
+            self.declare_parameter("pcd_directory", "").value, fallback_rel="../data/"
         )
 
         self.rel_fitness = self.declare_parameter("rel_fitness", 1e-7).value
@@ -113,6 +131,7 @@ class MultiLidarCalibrator(Node):
             pcd_paths = dict(zip(lidar_list, [None] * len(lidar_list)))
             for lidar in lidar_list:
                 self.declare_parameter(lidar, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+                self.declare_parameter(lidar + "_joint", "joint_" + lidar)
                 pcd_paths[lidar] = glob.glob(self.pcd_in_dir + lidar + "*")
             self.lidar_dict = dict(
                 zip(
@@ -128,9 +147,9 @@ class MultiLidarCalibrator(Node):
                 )
             )
             for lidar in lidar_list:
-                pcd = o3d.io.read_point_cloud(pcd_paths[lidar][0])
+                pcd = _pcd_from_file(pcd_paths[lidar][0])
                 for i in range(1, self.frame_count):
-                    pcd += o3d.io.read_point_cloud(pcd_paths[lidar][i])
+                    pcd += _pcd_from_file(pcd_paths[lidar][i])
                 self.lidar_dict[lidar].load_pcd(pcd)
             self.process_data()
             exit(0)
@@ -146,6 +165,33 @@ class MultiLidarCalibrator(Node):
         self.get_logger().info(calibration_info)
         with open(self.output_dir + self.results_file, "a") as file:
             file.write(calibration_info + "\n")
+
+    def _joint_for(self, lidar_name: str) -> str:
+        """Resolve URDF joint name for a lidar frame_id.
+
+        Allows preset-driven decoupling of driver-published frame_ids from
+        URDF joint names (e.g. driver emits 'rslidarfronttop' but URDF joint
+        is 'joint_rslidarfront_top'). Falls back to 'joint_<frame_id>'.
+        """
+        override = lidar_name + "_joint"
+        if self.has_parameter(override):
+            return self.get_parameter(override).value
+        return "joint_" + lidar_name
+
+    @staticmethod
+    def _resolve_dir(raw: str, fallback_rel: str) -> str:
+        """Normalise a directory-path param. Absolute → used as-is; empty or
+        relative → joined against this module's directory. Always returns a
+        realpath with trailing slash so string concat with filenames is safe.
+        """
+        module_dir = os.path.dirname(os.path.realpath(__file__))
+        if not raw:
+            resolved = os.path.join(module_dir, fallback_rel)
+        elif os.path.isabs(raw):
+            resolved = raw
+        else:
+            resolved = os.path.join(module_dir, raw)
+        return os.path.realpath(resolved) + "/"
 
     def read_data(self):
         """Read point clouds from ROS and LiDAR initial transformation from either ROS or table."""
@@ -180,12 +226,9 @@ class MultiLidarCalibrator(Node):
                 )
             )
         for key in self.lidar_data.keys():
-            # convert data from ros to pcd needed for open3d
-            t = rnp.numpify(self.lidar_data[key][0])
-            pcd = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(t["xyz"]))
+            pcd = _pcd_from_msg(self.lidar_data[key][0])
             for i in range(1, self.frame_count):
-                t = rnp.numpify(self.lidar_data[key][i])
-                pcd += o3d.geometry.PointCloud(o3d.utility.Vector3dVector(t["xyz"]))
+                pcd += _pcd_from_msg(self.lidar_data[key][i])
             self.lidar_dict[key].load_pcd(pcd)
         self.get_logger().info("Converted all the needed ros-data")
 
@@ -234,7 +277,7 @@ class MultiLidarCalibrator(Node):
             if self.urdf_path != "":
                 modify_urdf_joint_origin(
                     self.urdf_path,
-                    "joint_" + source_lidar.name,
+                    self._joint_for(source_lidar.name),
                     calibration.calibrated_transformation,
                 )
             calibrated_lidars.append(source_lidar)
@@ -274,7 +317,7 @@ class MultiLidarCalibrator(Node):
                 if self.urdf_path != "":
                     modify_urdf_joint_origin(
                         self.urdf_path,
-                        "joint_" + source_lidar.name,
+                        self._joint_for(source_lidar.name),
                         calibration.calibrated_transformation,
                     )
 
@@ -364,7 +407,7 @@ class MultiLidarCalibrator(Node):
                 if self.urdf_path != "":
                     modify_urdf_joint_origin(
                         self.urdf_path,
-                        "joint_" + calibration.source.name,
+                        self._joint_for(calibration.source.name),
                         calibration.calibrated_transformation,
                     )
 
@@ -465,7 +508,7 @@ class MultiLidarCalibrator(Node):
             if self.urdf_path != "":
                 modify_urdf_joint_origin(
                     self.urdf_path,
-                    "joint_" + self.target_lidar,
+                    self._joint_for(self.target_lidar),
                     calibration.calibrated_transformation,
                 )
             calibration.transform_pointcloud()
@@ -530,6 +573,7 @@ class MultiLidarCalibrator(Node):
             if self.read_tf_from_table and not self.declared_lidars_flag:
                 for lidar in self.lidar_data.keys():
                     self.declare_parameter(lidar)
+                    self.declare_parameter(lidar + "_joint", "joint_" + lidar)
                 self.declared_lidars_flag = True  # Don't repeatedly declare the same parameters
             begin = time()
             self.read_data()

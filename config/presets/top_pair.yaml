@@ -1,0 +1,27 @@
+# Top-facing LiDAR pair (P3 platform and similar). Overlap is higher than the
+# horizontal ring because both scan the canopy — relaxed fitness threshold.
+preset: top_pair
+
+sensors:
+  - name: front_top
+    topic: /lidar/front_top/rslidar_points
+    frame_id: rslidarfront_top
+    joint: joint_rslidarfront_top
+  - name: rear_top
+    topic: /lidar/rear_top/rslidar_points
+    frame_id: rslidarback_top
+    joint: joint_rslidarback_top
+
+target: front_top
+
+calibration:
+  fitness_score_threshold: 0.3
+  max_corresp_dist: 0.3
+  max_rotation_deg: 50.0
+  voxel_size: 0.05
+  remove_ground_flag: false
+  calibrate_to_base: true
+  calibrate_target: false
+  use_fitness_based_calibration: false
+  runs_count: 1
+  base_to_ground_z: 0.17864325963808905
