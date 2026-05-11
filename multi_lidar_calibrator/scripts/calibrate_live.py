@@ -26,7 +26,10 @@ from datetime import datetime
 import yaml
 from ament_index_python.packages import get_package_prefix
 
-LIDAR_FRAME_IDS = ["rslidarfront", "rslidarback", "rslidarleft", "rslidarright"]
+LIDAR_FRAME_IDS = [
+    "rslidarfront", "rslidarback", "rslidarleft", "rslidarright",
+    "rslidarfronttop", "rslidarbacktop",
+]
 
 LIDAR_TOPICS = [
     "/lidar/front/rslidar_points",

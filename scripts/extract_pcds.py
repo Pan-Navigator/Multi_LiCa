@@ -11,6 +11,21 @@ Usage:
 import os
 import sys
 
+# Block open3d.ml's eager import chain — it pulls sklearn → scipy and trips
+# a numpy ABI mismatch in this container. We only need open3d.{geometry,io,utility}.
+# TODO: remove once docker setup pins compatible numpy/scipy/open3d versions.
+class _Open3DMLBlocker:
+    def find_module(self, name, path=None):
+        if name == "open3d.ml" or name.startswith("open3d._ml3d"):
+            return self
+        return None
+    def load_module(self, name):
+        m = sys.modules.get(name) or type(sys)(name)
+        m.__path__ = []
+        sys.modules[name] = m
+        return m
+sys.meta_path.insert(0, _Open3DMLBlocker())
+
 import numpy as np
 import open3d as o3d
 import rclpy
@@ -19,11 +34,11 @@ from sensor_msgs.msg import PointCloud2
 import ros2_numpy as rnp
 
 TOPICS = {
-    "/lidar/front/rslidar_points": "rslidarfront",
-    "/lidar/back/rslidar_points":  "rslidarback",
+    "/lidar/front/top/rslidar_points": "rslidarfronttop",
+    "/lidar/back/top/rslidar_points":  "rslidarreartop",
 }
 FRAME_COUNT = 10
-OUT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/pcds/")
+OUT_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), "../data/pcds_p3/")
 
 
 class PcdExtractor(Node):

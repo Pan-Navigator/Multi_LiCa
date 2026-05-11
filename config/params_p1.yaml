@@ -1,8 +1,7 @@
 /**:
   ros__parameters:
-    # P3 calibration config — 2-lidar: front_top (reference) + rear_top (source)
-    # Source bag: calibrate_p3_new_20260428_122425
-    # TF mapping: rslidarfronttop = /lidar/front/top, rslidarreartop = /lidar/back/top
+    # P1 calibration config — front_top (reference) + back_top (source)
+    # TF mapping: rslidarfronttop = /lidar/front/top, rslidarbacktop = /lidar/back/top
 
     frame_count: 1
     runs_count: 5
@@ -11,17 +10,17 @@
 
     lidar_topics: [/lidar/front/top/rslidar_points, /lidar/back/top/rslidar_points]
     tf_topic: /tf_static
-    visualize: false
+    visualize: true
     read_tf_from_table: true
     table_degrees: true
 
-    # Initial transforms from URDF — amr-versioning-system/urdf/customers/rijkzwaan/kwintsheul/p03/mecanum_bot.urdf
+    # Initial transforms from URDF — amr-versioning-system/urdf/customers/rijkzwaan/kwintsheul/p01/mecanum_bot.xacro
     # Both joints are direct children of base_link. RPY converted rad → deg.
-    rslidarfronttop: [1.2281, 0.3658, 0.1855, 0.0, 0.0, -45.0]
-    rslidarreartop:  [-1.219604, -0.414249, 0.084016, -3.5342, 0.7098, 136.1813]
+    rslidarfronttop: [1.312, -0.45, 0.345, 0.0, 0.0, -46.9825]
+    rslidarbacktop:  [-1.2128, 0.6849, 0.2737, -1.1521, -0.3856, 132.3675]
 
     read_pcds_from_file: true
-    pcd_directory: /../data/pcds_p3/
+    pcd_directory: /../data/pcds_p1/
 
     base_to_ground_z: 0.17864325963808905
 
@@ -30,19 +29,19 @@
     calibrate_target: false
     calibrate_to_base: true
 
-    output_dir: /../output/p3/
-    results_file: results_p3.txt
+    output_dir: /../output/p1/
+    results_file: results_p1.txt
 
     # GICP parameters
     max_corresp_dist: 0.3
-    max_rotation_deg: 50.0
+    max_rotation_deg: 10.0
     rel_fitness: 1.0e-6
     rel_rmse: 1.0e-6
     max_iterations: 200
     epsilon: 0.0001
     voxel_size: 0.05
     remove_ground_flag: false
-    fitness_score_threshold: 0.05
+    fitness_score_threshold: 0.3
 
     # RANSAC parameters
     distance_threshold: 0.1
