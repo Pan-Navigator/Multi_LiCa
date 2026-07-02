@@ -1,5 +1,7 @@
 import glob
 import os
+import shutil
+import xml.etree.ElementTree as ET
 from time import time
 
 import numpy as np
@@ -69,6 +71,11 @@ class MultiLidarCalibrator(Node):
             "use_fitness_based_calibration", False
         ).value
         self.read_tf_from_table = self.declare_parameter("read_tf_from_table", True).value
+        # Seed priors from URDF joint origins instead of a parameter table, so the
+        # xacro stays the single source of truth. urdf_source_path is copied to
+        # urdf_path first (write-back then lands in the scratch copy).
+        self.read_tf_from_urdf = self.declare_parameter("read_tf_from_urdf", False).value
+        self.urdf_source_path = self.declare_parameter("urdf_source_path", "").value
         self.table_degrees = self.declare_parameter("table_degrees", True).value
         self.topic_names = self.declare_parameter("lidar_topics", [""]).value
         self.target_lidar = self.declare_parameter("target_frame_id", "lidar_1").value
@@ -179,6 +186,19 @@ class MultiLidarCalibrator(Node):
         return "joint_" + lidar_name
 
     @staticmethod
+    def _parse_urdf_origins(urdf_path: str) -> dict:
+        """Read {joint_name: (xyz, rpy_rad)} from a URDF/xacro's <origin> tags."""
+        origins = {}
+        for joint in ET.parse(urdf_path).getroot().iter("joint"):
+            origin = joint.find("origin")
+            if origin is None:
+                continue
+            xyz = [float(v) for v in origin.get("xyz", "0 0 0").split()]
+            rpy = [float(v) for v in origin.get("rpy", "0 0 0").split()]
+            origins[joint.get("name")] = (xyz, rpy)
+        return origins
+
+    @staticmethod
     def _resolve_dir(raw: str, fallback_rel: str) -> str:
         """Normalise a directory-path param. Absolute → used as-is; empty or
         relative → joined against this module's directory. Always returns a
@@ -201,7 +221,25 @@ class MultiLidarCalibrator(Node):
         )
         # create a dict of <lidar_name>:<Lidar> whereas Lidar is created using data from
         # /tf_static or parameter table
-        if self.read_tf_from_table:
+        if self.read_tf_from_urdf:
+            src = self.urdf_source_path or self.urdf_path
+            if self.urdf_source_path and self.urdf_path and self.urdf_source_path != self.urdf_path:
+                os.makedirs(os.path.dirname(self.urdf_path), exist_ok=True)
+                shutil.copy(self.urdf_source_path, self.urdf_path)
+            origins = self._parse_urdf_origins(src)
+            self.lidar_dict = {}
+            for lidar in self.lidar_data.keys():
+                joint = self._joint_for(lidar)
+                if joint not in origins:
+                    raise RuntimeError(f"URDF {src} has no joint '{joint}' for lidar '{lidar}'")
+                xyz, rpy = origins[joint]
+                self.get_logger().info(f"URDF prior [{lidar}] ({joint}): xyz={xyz} rpy={rpy}")
+                self.lidar_dict[lidar] = Lidar(
+                    lidar, Translation(*xyz), Rotation(*rpy, degrees=False)
+                )
+        elif self.read_tf_from_table:
+            for lidar in self.lidar_data.keys():
+                self.get_logger().info(f"transform param [{lidar}] = {self.get_parameter(lidar).value}")
             self.lidar_dict = dict(
                 zip(
                     self.lidar_data.keys(),
@@ -209,7 +247,7 @@ class MultiLidarCalibrator(Node):
                         Lidar(
                             lidar,
                             Translation(*self.get_parameter(lidar).value[0:3]),
-                            Rotation(*self.get_parameter(lidar).value[3:], True),
+                            Rotation(*self.get_parameter(lidar).value[3:], self.table_degrees),
                         )
                         for lidar in self.lidar_data.keys()
                     ],
@@ -437,6 +475,21 @@ class MultiLidarCalibrator(Node):
         """
         self.get_logger().info("Starting the calibration...")
 
+        # Assign a distinct, stable color per source lidar so the stitched PCDs are
+        # colorized by sensor — open the .pcd in CloudCompare/open3d and verify
+        # convergence by how well the colors overlap after calibration.
+        palette = [
+            [0.10, 0.45, 0.90],  # blue
+            [0.90, 0.20, 0.15],  # red
+            [0.15, 0.70, 0.25],  # green
+            [0.95, 0.65, 0.10],  # orange
+            [0.60, 0.25, 0.75],  # purple
+            [0.10, 0.70, 0.75],  # teal
+        ]
+        source_colors = {
+            name: palette[i % len(palette)] for i, name in enumerate(self.lidar_dict.keys())
+        }
+
         # Build TF-aligned copies of each lidar's pcd for initial visualization and stitched_initial.pcd.
         # Must be done before calibration modifies any pcd in-place.
         stitched_pcd_initial = o3d.geometry.PointCloud()
@@ -444,6 +497,7 @@ class MultiLidarCalibrator(Node):
         for lidar in self.lidar_dict.values():
             pcd_in_base = o3d.geometry.PointCloud(lidar.pcd)
             pcd_in_base.transform(lidar.tf_matrix.matrix)
+            pcd_in_base.paint_uniform_color(source_colors[lidar.name])
             stitched_pcd_initial += pcd_in_base
             tmp = Lidar(lidar.name, lidar.translation, lidar.rotation)
             tmp.load_pcd(pcd_in_base)
@@ -492,7 +546,7 @@ class MultiLidarCalibrator(Node):
             calibration.compute_gicp_transformation(self.voxel_size, remove_ground_plane=False)
 
             # Update the target lidar's translation
-            if self.read_tf_from_table:
+            if self.read_tf_from_table or self.read_tf_from_urdf:
                 translation.z = (
                     calibration.calibrated_transformation.translation.z - self.base_to_ground_z
                 )
@@ -537,10 +591,13 @@ class MultiLidarCalibrator(Node):
             self.standard_calibration(target_lidar)
 
         visualize_calibration(list(self.lidar_dict.values()), True, not self.visualize)
-        # Create a point cloud for the transformed data
+        # Create a point cloud for the transformed data, colored per source lidar
+        # (same color map as stitched_initial.pcd) so convergence is visible by color.
         stitched_pcd_transformed = o3d.geometry.PointCloud()
         for lidar in self.lidar_dict.values():
-            stitched_pcd_transformed += lidar.pcd_transformed
+            colored = o3d.geometry.PointCloud(lidar.pcd_transformed)
+            colored.paint_uniform_color(source_colors.get(lidar.name, [0.5, 0.5, 0.5]))
+            stitched_pcd_transformed += colored
         # Save the transformed point clouds to a .pcd file
         o3d.io.write_point_cloud(
             self.output_dir + "stitched_transformed.pcd", stitched_pcd_transformed
@@ -554,7 +611,7 @@ class MultiLidarCalibrator(Node):
 
     def pointcloud_callback(self, msg: PointCloud2):
         # Wait for the TFMessage before processing the point cloud if table is not used
-        if self.tf_msg is None and not self.read_tf_from_table:
+        if self.tf_msg is None and not self.read_tf_from_table and not self.read_tf_from_urdf:
             self.get_logger().info("Waiting for tf...")
             return
 
@@ -570,9 +627,9 @@ class MultiLidarCalibrator(Node):
         if [len(self.lidar_data[i]) == self.frame_count for i in self.lidar_data.keys()] == [
             True
         ] * len(self.topic_names):
-            if self.read_tf_from_table and not self.declared_lidars_flag:
+            if (self.read_tf_from_table or self.read_tf_from_urdf) and not self.declared_lidars_flag:
                 for lidar in self.lidar_data.keys():
-                    self.declare_parameter(lidar)
+                    self.declare_parameter(lidar, [0.0, 0.0, 0.0, 0.0, 0.0, 0.0])
                     self.declare_parameter(lidar + "_joint", "joint_" + lidar)
                 self.declared_lidars_flag = True  # Don't repeatedly declare the same parameters
             begin = time()

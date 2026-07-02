@@ -7,10 +7,11 @@ Originally forked from [TUM-AVS/Multi_LiCa](https://github.com/TUM-AVS/Multi_LiC
 ## Quick start
 
 ```bash
-# Author a params YAML from a template in config/ros_params/, then:
+# Params come from the amr-versioning-system layer; materialize for the active machine:
+cd ../../amr-versioning-system && ./utils/apply.sh   # or pass <customer> <location> <machine>
 ros2 bag play /path/to/bag_dir --loop &
-ros2 launch multi_lidar_calibrator calibration.launch.py \
-  parameter_file:=/abs/path/to/params.yaml
+ros2 launch multi_lidar_calibrator calibration.launch.py
+# parameter_file:= defaults to amr-versioning-system/config/current/sensors/multi_lidar_calibration.yaml
 ```
 
 The node accumulates `frame_count` frames per topic, registers each source LiDAR to the target with GICP, writes `results.txt` + stitched point clouds to `output_dir`, and rewrites the joint origins in the file given by `urdf_path` — point that at a scratch copy, never a repo URDF.
@@ -19,7 +20,12 @@ Full docs → [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md).
 
 ## Params files
 
-Per-robot flat ROS-params YAMLs live in [config/ros_params/](config/ros_params/). Initial transforms are `[x, y, z, roll, pitch, yaw]` per sensor frame — degrees when `table_degrees: true`. Take them from the robot's live URDF; GICP has no coarse init and needs priors within ~10°.
+Calibration params follow the amr-versioning-system base/customers/current pattern:
+
+- `amr-versioning-system/config/base/sensors/multi_lidar_calibration.yaml` — shared algorithm tuning and I/O conventions.
+- `amr-versioning-system/config/customers/<customer>/<location>/<machine>/sensors/` — per-machine topic lists, `<frame_id>_joint` mappings, and tuning overrides (deep-merged over base by `apply.sh`).
+
+Priors are **not** duplicated in config: with `read_tf_from_urdf: true` the node seeds them from the joint origins in `urdf_source_path` (`urdf/current/mecanum_bot.urdf`, machine-correct after `apply.sh`) and copies that file to the scratch `urdf_path` for write-back. GICP has no coarse init and needs priors within ~10° — if a sensor was remounted, fix the xacro first (eyeball with the `tools/` viewer).
 
 | Pair | Notes |
 |---|---|

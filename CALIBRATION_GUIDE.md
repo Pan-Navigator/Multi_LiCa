@@ -50,51 +50,31 @@ ros2 bag info /path/to/bag_dir   # topics must match the params YAML exactly
 
 (Live calibration works the same way — skip the bag and make sure the drivers are publishing.)
 
-### 2. Author the params YAML
+### 2. Materialize the params for the machine
 
-Copy a template from `config/ros_params/` and adjust. The critical part is the initial-transform table:
+Params live in the amr-versioning-system layer, not in this package:
 
-- **Take priors from the robot's live URDF, not a possibly-stale repo xacro.** On p01 the repo xacro was ~20° off in yaw and calibration failed (fitness 0.11) until the priors were corrected.
-- With `table_degrees: true` the table is `[x, y, z, roll_deg, pitch_deg, yaw_deg]` — URDF rpy is **radians**, convert.
-- `urdf_path:` must point at a **scratch copy** of the URDF — the node rewrites the matching joint origins in that file in place.
-- For eyeballing priors against the bag clouds, use the standalone viewer in `tools/`.
+- `config/base/sensors/multi_lidar_calibration.yaml` — shared algorithm tuning + I/O conventions.
+- `config/customers/<customer>/<location>/<machine>/sensors/` — per-machine topic lists, `<frame_id>_joint` mappings, tuning overrides. Deep-merged over base by `apply.sh` into `config/current/sensors/`.
 
-Key params (validated values from the p01 front/back run):
-
-```yaml
-/**:
-  ros__parameters:
-    read_pcds_from_file: false     # subscribe to topics
-    read_tf_from_table: true       # priors come from the table below
-    table_degrees: true
-    frame_count: 3                 # frames accumulated per lidar
-    lidar_topics: [/lidar/front/rslidar_points, /lidar/back/rslidar_points]
-    target_frame_id: rslidarfront  # held fixed; only the OTHER joints get refined
-    base_frame_id: base_link
-    calibrate_to_base: true
-    calibrate_target: false
-    urdf_path: /tmp/scratch/mecanum_bot_copy.xacro
-    output_dir: /tmp/calib_output/
-    max_corresp_dist: 0.3          # GICP correspondence limit (m)
-    max_rotation_deg: 10.0         # reject GICP results rotating more than this
-    voxel_size: 0.05
-    fitness_score_threshold: 0.15  # 0.3 is unreachable for low-overlap pairs; see below
-    base_to_ground_z: 0.17864325963808905
-
-    rslidarfront: [1.312, -0.45, 0.345, 0.0, 0.0, -23.282]   # degrees!
-    rslidarback:  [-1.264, 0.610, 0.167, -1.455, 0.018, 119.58]
-    rslidarfront_joint: joint_rslidarfront
-    rslidarback_joint:  joint_rslidarback
+```bash
+cd amr-versioning-system && ./utils/apply.sh <customer> <location> <machine>
 ```
 
-`<frame_id>` keys must match what the driver publishes in `PointCloud2.header.frame_id`; the `<frame_id>_joint` keys map them to URDF joint names.
+**Priors come from the URDF, not from config.** With `read_tf_from_urdf: true` (the base default) the node reads each `<frame_id>`'s joint origin from `urdf_source_path` — `urdf/current/mecanum_bot.urdf`, which `apply.sh` generates from the machine's tracked xacro — then copies that file to the scratch `urdf_path` and writes refined origins **only there**. The xacro stays the single source of truth.
+
+Because GICP has no coarse init, priors must be within ~10°. If a sensor was physically remounted, fix the machine's xacro first (eyeball against bag clouds with the standalone viewer in `tools/`), re-run `apply.sh`, then calibrate.
+
+`<frame_id>` keys must match what the driver publishes in `PointCloud2.header.frame_id`; `<frame_id>_joint` params map them to URDF joint names when they differ from `joint_<frame_id>` (see the p03v2 top-pair file).
+
+A manual `[x,y,z,roll,pitch,yaw]` table is still supported for experiments: set `read_tf_from_urdf: false`, `read_tf_from_table: true`, and per-frame `<frame_id>:` arrays (degrees when `table_degrees: true` — URDF rpy is radians, convert).
 
 ### 3. Run
 
 ```bash
 ros2 bag play /path/to/bag_dir --loop &
-ros2 launch multi_lidar_calibrator calibration.launch.py \
-  parameter_file:=/abs/path/to/params.yaml
+ros2 launch multi_lidar_calibrator calibration.launch.py
+# parameter_file:= defaults to amr-versioning-system/config/current/sensors/multi_lidar_calibration.yaml
 # the node exits by itself when done; kill the bag play afterwards
 ```
 
@@ -127,7 +107,7 @@ Nothing is written to the repo automatically. Once the gates pass:
 2. Make sure the **target** sensor's origin in that xacro equals the prior you held it at — the refined joints are relative to it.
 3. Commit on a branch in the `amr-versioning-system` submodule; `apply.sh` materialises it to `urdf/current/`.
 
-**Never source priors from or write results to `urdf/current/mecanum_bot.urdf` directly** — it may belong to a different machine (check `AMR_MACHINE` in `config/current/.env`) or contain a bad earlier write-back.
+**Before calibrating, make sure `urdf/current/` belongs to the machine you're calibrating** — check `AMR_MACHINE` in `config/current/.env` and re-run `apply.sh` if not. Never hand-edit `urdf/current/` or point the node's write-back (`urdf_path`) at it; it gets regenerated on every apply and edits are silently lost.
 
 ---
 
