@@ -1,30 +1,33 @@
 # multi_lidar_calibrator
 
-Multi-LiDAR extrinsic calibration for the mecanum AMR platform. Refines sensor poses in a URDF against live topics or a recorded bag using GICP with TEASER++ feature matching.
+Multi-LiDAR extrinsic calibration for the mecanum AMR platform. Refines sensor poses in a URDF against live topics or a recorded bag using GICP.
 
-Originally forked from [TUM-AVS/Multi_LiCa](https://github.com/TUM-AVS/Multi_LiCa) — the upstream algorithm stays; the wrapping workflow (URDF-driven initial guesses, preset YAMLs, amr-versioning-system write-back) is specific to this repo.
+Originally forked from [TUM-AVS/Multi_LiCa](https://github.com/TUM-AVS/Multi_LiCa) — the upstream algorithm stays; the URDF write-back and the flat ROS-params workflow are specific to this repo.
 
 ## Quick start
 
 ```bash
-# One preset CLI, URDF is the single source of truth for initial guesses
-calibrate_live --preset horizontal_pair                         # live
-calibrate_live --preset top_pair --bag /path/to/bag_dir         # offline
+# Author a params YAML from a template in config/ros_params/, then:
+ros2 bag play /path/to/bag_dir --loop &
+ros2 launch multi_lidar_calibrator calibration.launch.py \
+  parameter_file:=/abs/path/to/params.yaml
 ```
 
-Results land in `/tmp/multi_lidar_calib_<preset>_<timestamp>/`; the script prompts before writing the refined URDF back into `amr-versioning-system/urdf/current/` and the robot-specific customer path.
+The node accumulates `frame_count` frames per topic, registers each source LiDAR to the target with GICP, writes `results.txt` + stitched point clouds to `output_dir`, and rewrites the joint origins in the file given by `urdf_path` — point that at a scratch copy, never a repo URDF.
 
 Full docs → [CALIBRATION_GUIDE.md](CALIBRATION_GUIDE.md).
 
-## Presets
+## Params files
 
-| Preset | Sensors | Notes |
-|---|---|---|
-| `horizontal_pair` | front + back | Only pair with enough overlap for automatic GICP |
-| `horizontal_ring` | front + back + left + right | Diagnostic; left/right typically don't auto-cal |
-| `top_pair` | front_top + rear_top | P3 top-facing mast LiDARs |
+Per-robot flat ROS-params YAMLs live in [config/ros_params/](config/ros_params/). Initial transforms are `[x, y, z, roll, pitch, yaw]` per sensor frame — degrees when `table_degrees: true`. Take them from the robot's live URDF; GICP has no coarse init and needs priors within ~10°.
 
-Add your own: drop a YAML in [config/presets/](config/presets/) and rebuild.
+| Pair | Notes |
+|---|---|
+| front + back | Only horizontal pair with enough overlap for automatic GICP |
+| front_top + rear_top | P3 top-facing mast LiDARs |
+| left / right | Near-zero overlap — keep hand-measured origins |
+
+For eyeballing priors against bag clouds, use the standalone viewer in [tools/](tools/).
 
 ## License
 
