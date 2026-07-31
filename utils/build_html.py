@@ -15,7 +15,7 @@ SENSOR_META = [
 tuner_config = {
     "header": {
         "main": "Van Noord P3v2 six-lidar extrinsics tuner",
-        "sub": "6 lidars · seeds from bag /tf_static (matches p03v2 xacro) · clouds from calibration_20260731_110805 · frame base_link"
+        "sub": "6 lidars · back/right/backtop calibrated via chained GICP, front/left held at measured priors (no usable overlap) · clouds from calibration_20260731_110805 · frame base_link"
     },
     "sensors": SENSOR_META,
     "target": "front",
